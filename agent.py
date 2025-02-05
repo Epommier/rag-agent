@@ -2,17 +2,13 @@ import os
 import uuid
 import json
 
-from typing import Annotated, List
+from typing import List, Literal
 from pydantic import BaseModel, Field
-from slugify import slugify
 
 from langchain.schema import Document
 from langchain.globals import set_verbose
-from langchain.prompts import MessagesPlaceholder
-from langchain.tools import tool
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.tools import tool
 
 from langchain_qdrant import QdrantVectorStore
 
@@ -20,16 +16,13 @@ from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt.chat_agent_executor import AgentState
+from langgraph.graph import StateGraph, END
 
 set_verbose(True)
 
 embeddings = AzureOpenAIEmbeddings(
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-    azure_deployment="text-embedding-3-large")
-
-collection_name = "pdf_embeddings"
-#pdf_chunks = create_pdf_embeddings("./data/input/PatternsMartinFowler.pdf", embeddings)
-#upload_chunks_to_qdrant(pdf_chunks, collection_name)
+    azure_deployment=os.environ["AZURE_OPENAI_EMBEDDING_MODEL"])
 
 class Reference(BaseModel):
     """A reference to a document source"""
@@ -44,14 +37,14 @@ class Reference(BaseModel):
             content=document.page_content,
             title=document.metadata.get('source', 'Unknown Title'),
             page=str(document.metadata.get('page', 'Unknown Page')),
-            id=document.id)
-    
+            id=document.metadata.get('_id', 'Unknown ID')
+        )
     def __str__(self) -> str:
         """Returns a markdown formatted string representation of the reference"""
         return f"""
 > {self.content}
 >
-> <a href="{slugify(self.tile)}-{self.page}">*{self.title}*, p. {self.page}</a>
+> <a href="{self.id}">*{self.title}*, p. {self.page}</a>
 """
 
 class RagState(AgentState):
@@ -59,31 +52,8 @@ class RagState(AgentState):
     queries: List[str]
     references: List[Reference]
 
-@tool
-def search_qdrant(query: Annotated[str, "The search query to find similar text in documents"]) -> List[Reference]: 
-    """
-    This function performs a semantic search in a document collection to find text chunks in documents that are similar to the given query.
-    
-    Args:
-        query (str): The search query to find similar text in documents.
-    
-    Returns:
-        List[Reference]: A list of references containing the search results with text, title and page.
-    """
-
-    retriever = QdrantVectorStore.from_existing_collection(
-        collection_name=collection_name,
-        embedding=embeddings,
-        content_payload_key="text",
-        url=os.environ.get("QDRANT_URL"),
-        api_key=os.environ.get("QDRANT_API_KEY")).as_retriever(k=5)
-    
-    docs = retriever.get_relevant_documents(query)
-    refs = [Reference.from_document(doc) for doc in docs]
-    return refs
-
 checkpointer = MemorySaver()
-tools = [search_qdrant]
+tools = []
 llm = AzureChatOpenAI(
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
     azure_deployment="gpt-4o",
@@ -93,27 +63,19 @@ llm = AzureChatOpenAI(
     timeout=None,
     max_retries=3
 )
+json_llm = AzureChatOpenAI(
+    azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+    azure_deployment="gpt-4o",
+    openai_api_version=os.environ["AZURE_OPENAI_API_VERSION"],
+    temperature=0.0,
+    response_format={"type": "json_object"}
+)
 
-config = {
-    "configurable": {
-        "thread_id": str(uuid.uuid4()),
-        "timeout": None,
-        "recursion_limit": 10
-    }
-}
-
-def generate_question(state: RagState):
+def generate_queries(state: RagState):
     question = state["question"]
     prompt = ChatPromptTemplate.from_messages([
         ("system", open("prompts\\queries_prompt.txt", "r").read()),
         ("user", "{question}")])
-
-    json_llm = AzureChatOpenAI(
-        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-        azure_deployment="gpt-4o",
-        openai_api_version=os.environ["AZURE_OPENAI_API_VERSION"],
-        temperature=0.0,
-        response_format={"type": "json_object"})
 
     response = json_llm.invoke(prompt.format(question=question))
     parsed_response = json.loads(response.content)
@@ -122,14 +84,16 @@ def generate_question(state: RagState):
 def retrieve_references(state: RagState):
     queries = state["queries"]
     retriever = QdrantVectorStore.from_existing_collection(
-        collection_name=collection_name,
+        collection_name=os.environ["QDRANT_COLLECTION"],
         embedding=embeddings,
         content_payload_key="text",
         url=os.environ.get("QDRANT_URL"),
         api_key=os.environ.get("QDRANT_API_KEY")).as_retriever(k=5)
 
     docs = [doc for query in queries for doc in retriever.invoke(query)]
-    return {"references": [Reference.from_document(doc) for doc in docs]}
+    references = [Reference.from_document(doc) for doc in docs]
+    unique_references = list({ref.id: ref for ref in references})
+    return {"references": unique_references}
 
 def generate_answer(state: RagState):
     query = state["question"]
@@ -142,3 +106,52 @@ def generate_answer(state: RagState):
 
     response = llm.invoke(txt)
     return {"messages": [{"role": "assistant", "content": response.content}]}
+
+def evaluate_answer(state: RagState) -> Literal["end", "loop"]:
+    answer = state["messages"][-1].content
+    references = "\n".join([str(ref) for ref in state["references"]])
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", open("prompts\\grade_prompt.txt", "r").read()),
+        ("user", "FACTS: {references}\n\nANSWER: {answer}")])
+    
+    result = json_llm.invoke(prompt.format(references=references, answer=answer))
+    score = json.loads(result.content)["binary_score"]
+
+    if score == "yes":
+        return "end"
+    else:
+        return "loop"
+
+if __name__ == "__main__":
+    workflow = StateGraph(RagState)
+
+    workflow.add_node("generatequeries", generate_queries);
+    workflow.add_node("retrievereferences", retrieve_references);
+    workflow.add_node("generateanswer", generate_answer);
+
+    workflow.set_entry_point("generatequeries")
+    workflow.add_edge("generatequeries", "retrievereferences")
+    workflow.add_edge("retrievereferences", "generateanswer")
+    workflow.add_conditional_edges(
+        "generateanswer",
+        evaluate_answer,
+        { 
+            "end": END,
+            "loop": "generateanswer"
+        }
+    )
+
+    # Compile
+    graph = workflow.compile()
+    graph.get_graph().draw_mermaid_png(output_file_path="data\\output\\workflow.png")
+
+    config = {
+        "configurable": {
+            "thread_id": str(uuid.uuid4()),
+            "timeout": None,
+            "recursion_limit": 10
+        }
+    }
+
+    for event in graph.stream({"question": "What is Domain Model and how could i integrate it in my project ?"}, config=config):
+        print(event)
