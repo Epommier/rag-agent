@@ -1,14 +1,20 @@
 import os
+from uuid import uuid4
 
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_qdrant import QdrantVectorStore
+from langchain.globals import set_verbose
+from langchain_community.document_loaders import PyMuPDFLoader
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 from typing import List, Dict, Any
 
-def create_pdf_embeddings(pdf_path: str, embeddings: AzureOpenAIEmbeddings, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[Dict[str, Any]]:
+def create_pdf_embeddings(
+        pdf_path: str,
+        embeddings: AzureOpenAIEmbeddings,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200
+    ) -> List[Dict[str, Any]]:
     """
     Create embeddings for a PDF file using LangChain text splitter and Azure OpenAI embeddings.
     
@@ -22,7 +28,7 @@ def create_pdf_embeddings(pdf_path: str, embeddings: AzureOpenAIEmbeddings, chun
         List[Dict[str, Any]]: List of dictionaries containing text chunks and their embeddings
     """
     # Load PDF
-    loader = PyPDFLoader(pdf_path)
+    loader = PyMuPDFLoader(pdf_path)
     pages = loader.load()
     
     # Split text into chunks
@@ -72,13 +78,29 @@ def upload_chunks_to_qdrant(pdf_chunks: List[Dict[str, Any]], collection_name: s
     )
 
     # Prepare the data for insertion
-    vectors = [chunk['vector'] for chunk in pdf_chunks]
-    payloads = [{"text": chunk['text'], "metadata": chunk['metadata']} for chunk in pdf_chunks]
-
+    vectors, payloads, uuids = zip(*[
+        (
+            chunk['vector'],
+            {"text": chunk['text'], "metadata": chunk['metadata']},
+            str(uuid4())
+        )
+        for chunk in pdf_chunks
+    ])
+    
     # Insert the data into the Qdrant collection
     qdrant_client.upload_collection(
         collection_name=collection_name,
         vectors=vectors,
         payload=payloads,
-        ids=None  # Let Qdrant auto-generate IDs
+        ids=uuids
     )
+
+if __name__ == "__main__":
+    set_verbose(True)
+    embeddings = AzureOpenAIEmbeddings(
+        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+        azure_deployment=os.environ["AZURE_OPENAI_EMBEDDING_MODEL"]
+    )
+
+    pdf_chunks = create_pdf_embeddings("./data/input/PatternsMartinFowler.pdf", embeddings)
+    upload_chunks_to_qdrant(pdf_chunks, os.environ["QDRANT_COLLECTION"])
