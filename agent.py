@@ -2,13 +2,17 @@ import os
 import uuid
 import json
 
-from typing import List, Literal
+from typing import List, Literal, AsyncGenerator, Sequence
+from typing_extensions import Annotated
+from operator import add
+
 from pydantic import BaseModel, Field
 
 from langchain.schema import Document
 from langchain.globals import set_verbose
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, AIMessage, BaseMessage
 
 from langchain_qdrant import QdrantVectorStore
 
@@ -17,6 +21,7 @@ from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt.chat_agent_executor import AgentState
 from langgraph.graph import StateGraph, END
+from langgraph.graph.state import CompiledStateGraph
 
 set_verbose(True)
 
@@ -51,9 +56,8 @@ class RagState(AgentState):
     question: str
     queries: List[str]
     references: List[Reference]
+    updates: Sequence[SystemMessage]
 
-checkpointer = MemorySaver()
-tools = []
 llm = AzureChatOpenAI(
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
     azure_deployment="gpt-4o",
@@ -79,7 +83,13 @@ def generate_queries(state: RagState):
 
     response = json_llm.invoke(prompt.format(question=question))
     parsed_response = json.loads(response.content)
-    return {"queries": parsed_response["queries"]}
+    return {
+        "queries": parsed_response["queries"],
+        "updates": [
+            SystemMessage(content="🔍 Generating search queries for your question..."),
+            SystemMessage(content="📚 Searching through the document collection...")
+        ]
+    }
 
 def retrieve_references(state: RagState):
     queries = state["queries"]
@@ -92,8 +102,15 @@ def retrieve_references(state: RagState):
 
     docs = [doc for query in queries for doc in retriever.invoke(query)]
     references = [Reference.from_document(doc) for doc in docs]
-    unique_references = list({ref.id: ref for ref in references})
-    return {"references": unique_references}
+    unique_refs_dict = {ref.id: ref for ref in references}
+
+    return {
+        "references": list(unique_refs_dict.values()),
+        "updates": [
+            SystemMessage(content=f"📎 Found {len(unique_refs_dict)} relevant references"),
+            SystemMessage(content="🤔 Generating answer based on the references...")
+        ]
+    }
 
 def generate_answer(state: RagState):
     query = state["question"]
@@ -101,11 +118,14 @@ def generate_answer(state: RagState):
     prompt = ChatPromptTemplate.from_messages([
         ("system", open("prompts\\answer_prompt.txt", "r").read()),
         ("user", "{question}")])
-    
-    txt = prompt.format(question=query, references=references_txt)
 
-    response = llm.invoke(txt)
-    return {"messages": [{"role": "assistant", "content": response.content}]}
+    response = llm.invoke(prompt.format(question=query, references=references_txt))
+    
+    return {
+        "messages": [            
+            AIMessage(content=response.content)
+        ]
+    }
 
 def evaluate_answer(state: RagState) -> Literal["end", "loop"]:
     answer = state["messages"][-1].content
@@ -122,7 +142,8 @@ def evaluate_answer(state: RagState) -> Literal["end", "loop"]:
     else:
         return "loop"
 
-if __name__ == "__main__":
+def construct_agent_graph() -> CompiledStateGraph:
+    checkpointer = MemorySaver()
     workflow = StateGraph(RagState)
 
     workflow.add_node("generatequeries", generate_queries);
@@ -142,16 +163,32 @@ if __name__ == "__main__":
     )
 
     # Compile
-    graph = workflow.compile()
-    graph.get_graph().draw_mermaid_png(output_file_path="data\\output\\workflow.png")
+    graph = workflow.compile(checkpointer=checkpointer)
+    return graph
 
+async def arun_agent(question: str) -> AsyncGenerator[dict, None]:
+    """Run the agent asynchronously and yield intermediate results"""
+    graph = construct_agent_graph()    
     config = {
-        "configurable": {
-            "thread_id": str(uuid.uuid4()),
-            "timeout": None,
-            "recursion_limit": 10
+            "configurable": {
+                "thread_id": str(uuid.uuid4()),
+                "timeout": None,
+                "recursion_limit": 10
+            }
         }
-    }
 
-    for event in graph.stream({"question": "What is Domain Model and how could i integrate it in my project ?"}, config=config):
-        print(event)
+    # Create initial state
+    initial_state = RagState(
+        question=question,
+        queries=[],
+        references=[]
+    )
+    
+    # Use astream to get intermediate results
+    async for _ in graph.astream(initial_state, config=config):
+        data = graph.get_state(config=config).values
+        yield data
+
+if __name__ == "__main__":
+    graph = construct_agent_graph()
+    graph.get_graph().draw_mermaid_png(output_file_path="data\\output\\workflow.png")
