@@ -11,33 +11,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS to change focus color
-st.markdown("""
-<style>
-    /* Change focus color of chat input */
-    .stChatInput > div:first-child {
-        border-color: #0e1117;
-    }
-    .stChatInput > div:first-child:hover {
-        border-color: #555;
-    }
-    .stChatInput > div:first-child:focus-within {
-        border-color: #0077b6 !important;
-        box-shadow: 0 0 0 1px #0077b6 !important;
-    }
-    
-    /* Change placeholder text color */
-    .stChatInput textarea::placeholder {
-        color: #666;
-    }
-    
-    /* Change input text color */
-    .stChatInput textarea {
-        color: #fff;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # Initialize session state for message history
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -52,7 +25,7 @@ with st.sidebar:
     
     # Add any additional controls here if needed
     st.divider()
-    if st.button("Clear Chat History"):
+    if st.button("Clear Chat History", icon=":material/delete:", type="tertiary", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
@@ -88,8 +61,6 @@ if prompt := st.chat_input("Ask a question...", key="chat_input"):
                 if isinstance(msg, AIMessage):
                     
                     status_container.update(label="Done thinking!", expanded=False, state="complete")
-                    await asyncio.sleep(0.5)
-                    status_container.empty()
                     
                     with st.chat_message("assistant"):
                         st.markdown(msg.content)
