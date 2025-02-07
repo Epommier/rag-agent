@@ -28,7 +28,10 @@ def create_pdf_embeddings(
         List[Dict[str, Any]]: List of dictionaries containing text chunks and their embeddings
     """
     # Load PDF
-    loader = PyMuPDFLoader(pdf_path)
+    loader = PyMuPDFLoader(
+        pdf_path,
+        extract_tables="markdown",
+        extract_images=False)
     pages = loader.load()
     
     # Split text into chunks
@@ -102,5 +105,8 @@ if __name__ == "__main__":
         azure_deployment=os.environ["AZURE_OPENAI_EMBEDDING_MODEL"]
     )
 
-    pdf_chunks = create_pdf_embeddings("./data/input/PatternsMartinFowler.pdf", embeddings)
-    upload_chunks_to_qdrant(pdf_chunks, os.environ["QDRANT_COLLECTION"])
+    input_folder = "./data/input/"
+    for filename in os.listdir(input_folder):
+        if filename.endswith(".pdf"):
+            pdf_chunks = create_pdf_embeddings(os.path.join(input_folder, filename), embeddings)
+            upload_chunks_to_qdrant(pdf_chunks, os.environ["QDRANT_COLLECTION"])
