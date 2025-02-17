@@ -8,6 +8,7 @@ You will be given a question and you need to generate a list of queries that wil
 - The queries should be specific and to the point and should cover all the important aspects of the question.
 - The queries could be words or phrases that are relevant to the question.
 - You could add subtopics that are related to the question and permit to gather more context for a more precise answer
+- Queries should be redacted in {language}
 
 ## Output format
 
