@@ -12,6 +12,8 @@ Here is the grade criteria to follow:
 
 (2) Ensure the STUDENT ANSWER does not contain "hallucinated" information outside the scope of the FACTS.
 
+(3) Ensure the STUDENT footnotes all comes from the FACTS without text alteration, summrazitation or truncation. The whole fact should be cited.
+
 Score:
 
 A score of yes means that the student's answer meets all of the criteria. This is the highest (best) score. 

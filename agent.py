@@ -105,10 +105,10 @@ def retrieve_references(state: RagState):
 
 def generate_answer(state: RagState):
     query = state["question"]
-    references_txt = "\n".join([str(ref) for ref in state["references"]])
+    references_txt = "\n\n".join([str(ref) for ref in state["references"]])
     prompt = ChatPromptTemplate.from_messages([
         ("system", open("prompts\\answer_prompt.txt", "r").read()),
-        ("user", "QUESTION: {question}\n\nREFERENCES: {references}")])
+        ("user", "REFERENCES: {references}\n\nQUESTION: {question}")])
 
     response = llm.invoke(
         prompt.format(
