@@ -41,11 +41,7 @@ class Reference(BaseModel):
         )
     def __str__(self) -> str:
         """Returns a markdown formatted string representation of the reference"""
-        return f"""
-> *{self.content}*
->
->> **{self.title}**, p. {self.page}
-"""
+        return f"""**{self.title}**, p. {self.page}: *{self.content}*"""
 
 class Evaluation(BaseModel):
     binary_score: Literal["yes", "no"]
@@ -124,7 +120,7 @@ def generate_answer(state: RagState):
 
 def evaluate_answer(state: RagState):
     answer = state["messages"][-1].content
-    references = "\n".join([str(ref) for ref in state["references"]])
+    references = "\n\n".join([str(ref) for ref in state["references"]])
     prompt = ChatPromptTemplate.from_messages([
         ("system", open("prompts\\grade_prompt.txt", "r").read()),
         ("user", "FACTS: {references}\n\nANSWER: {answer}")]
